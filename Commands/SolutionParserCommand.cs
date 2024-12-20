@@ -4,8 +4,10 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.Build.Construction;
 using Microsoft.Build.Definition;
+using Microsoft.Build.Evaluation;
 using Microsoft.Build.Locator;
 using MSProject = Microsoft.Build.Evaluation.Project;
+using Project = Models.Project;
 
 namespace Commands;
 public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settings>
@@ -40,7 +42,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             return 1;
         }
 
-        // Lookup a MSBuild instance from the installed dotnet SDK.
+        // Lookup a MSBuild instance from the installed dotnet SDKs.
         // The results should NOT be ordered: the first one matches the global.json if present.
         var msbuildInstance = MSBuildLocator
             .QueryVisualStudioInstances(new VisualStudioInstanceQueryOptions
@@ -131,7 +133,10 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
     {
         try
         {
-            var proj = MSProject.FromFile(projPath, new ProjectOptions());
+            var proj = MSProject.FromFile(projPath, new ProjectOptions
+            {
+                LoadSettings = ProjectLoadSettings.IgnoreMissingImports | ProjectLoadSettings.FailOnUnresolvedSdk
+            });
 
             var assembly = proj.GetPropertyValue("TargetPath");
             var outputType = proj.GetPropertyValue("outputType");
@@ -167,7 +172,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error parsing project {name}: {ex.Message}");
+            Console.Error.WriteLine($"Error parsing project {name}: {ex.Message}");
             return null;
         }
     }
