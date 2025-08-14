@@ -9,6 +9,8 @@ internal class Project
 
     public required string TargetPath { get; set; }
     public required string OutputType { get; set; }
+    // Normalized textual representation of OutputType (e.g. WinExe, Exe, Library)
+    public string NormalizedOutputType { get; set; } = string.Empty;
     public required string DesignerHostPath { get; set; }
     public required string TargetFramework { get; set; }
     public required string DepsFilePath { get; set; }

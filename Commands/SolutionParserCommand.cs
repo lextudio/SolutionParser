@@ -172,6 +172,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
 
             var assembly = proj.GetPropertyValue("TargetPath");
             var outputType = proj.GetPropertyValue("outputType");
+            var normalizedOutputType = NormalizeOutputType(outputType);
             var desingerHostPath = proj.GetPropertyValue("AvaloniaPreviewerNetCoreToolPath");
 
             var targetfx = proj.GetPropertyValue("TargetFramework");
@@ -190,6 +191,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
                 Path = projPath,
                 TargetPath = assembly,
                 OutputType = outputType,
+                NormalizedOutputType = normalizedOutputType,
                 DesignerHostPath = desingerHostPath,
 
                 TargetFramework = targetfx,
@@ -222,5 +224,22 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
         }
 
         return iop;
+    }
+
+    static string NormalizeOutputType(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        // MSBuild sometimes returns numeric values (0=Library, 1=Exe, 2=WinExe, 3=Module per legacy) or textual.
+        return raw.Trim() switch
+        {
+            "0" => "Library",
+            "1" => "Exe",
+            "2" => "WinExe",
+            "3" => "Module",
+            var s when s.Equals("library", StringComparison.OrdinalIgnoreCase) => "Library",
+            var s when s.Equals("exe", StringComparison.OrdinalIgnoreCase) => "Exe",
+            var s when s.Equals("winexe", StringComparison.OrdinalIgnoreCase) => "WinExe",
+            _ => raw
+        };
     }
 }
