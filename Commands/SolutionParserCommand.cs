@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Xml.Linq;
 using Microsoft.Build.Construction;
 using Microsoft.Build.Definition;
 using Microsoft.Build.Evaluation;
@@ -14,7 +15,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
 {
     public sealed class Settings : CommandSettings
     {
-        [Description("The solution file (.sln) path.")]
+    [Description("The solution file (.sln or .slnx) path, or folder containing project files.")]
         [CommandArgument(0, "<SOLUTION>")]
         public required string Solution { get; init; }
     }
@@ -26,8 +27,10 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
         var solutionFilePath = Path.GetFullPath(settings.Solution);
         string? solutionFolderPath;
 
-        if (!solutionFilePath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
-            && Directory.Exists(solutionFilePath))
+        bool isSln = solutionFilePath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase);
+        bool isSlnx = solutionFilePath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase);
+
+        if (!isSln && !isSlnx && Directory.Exists(solutionFilePath))
         {
             solutionFolderPath = solutionFilePath;
             solutionFilePath = null;
@@ -70,10 +73,39 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
 
         if (solutionFilePath is not null)
         {
-            var sln = SolutionFile.Parse(solutionFilePath);
-            projFiles = sln.ProjectsInOrder
-                .Where(prj => prj.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat)
-                .Select(prj => new ProjectRecord(prj.ProjectName, prj.AbsolutePath));
+            if (solutionFilePath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            {
+                var sln = SolutionFile.Parse(solutionFilePath);
+                projFiles = sln.ProjectsInOrder
+                    .Where(prj => prj.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat)
+                    .Select(prj => new ProjectRecord(prj.ProjectName, prj.AbsolutePath));
+            }
+            else if (solutionFilePath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var doc = XDocument.Load(solutionFilePath);
+                    XNamespace ns = doc.Root?.Name.Namespace ?? "";
+                    var projectNodes = doc.Descendants(ns + "Project");
+                    projFiles = projectNodes
+                        .Select(x => new ProjectRecord(
+                            (string?)x.Attribute("Name") ?? Path.GetFileNameWithoutExtension((string?)x.Attribute("Include") ?? string.Empty),
+                            Path.GetFullPath((string?)x.Attribute("Include") ?? string.Empty, Path.GetDirectoryName(solutionFilePath)!)))
+                        .Where(r => !string.IsNullOrEmpty(r.Path) && File.Exists(r.Path))
+                        .GroupBy(r => r.Path, StringComparer.OrdinalIgnoreCase)
+                        .Select(g => g.First())
+                        .ToList();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error parsing .slnx file: {ex.Message}");
+                    projFiles = Enumerable.Empty<ProjectRecord>();
+                }
+            }
+            else
+            {
+                projFiles = Enumerable.Empty<ProjectRecord>();
+            }
         }
         else if (solutionFolderPath is not null)
         {
