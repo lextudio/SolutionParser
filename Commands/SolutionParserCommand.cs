@@ -87,14 +87,54 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
                     var doc = XDocument.Load(solutionFilePath);
                     XNamespace ns = doc.Root?.Name.Namespace ?? "";
                     var projectNodes = doc.Descendants(ns + "Project");
-                    projFiles = projectNodes
-                        .Select(x => new ProjectRecord(
-                            (string?)x.Attribute("Name") ?? Path.GetFileNameWithoutExtension((string?)x.Attribute("Include") ?? string.Empty),
-                            Path.GetFullPath((string?)x.Attribute("Include") ?? string.Empty, Path.GetDirectoryName(solutionFilePath)!)))
-                        .Where(r => !string.IsNullOrEmpty(r.Path) && File.Exists(r.Path))
+                    Console.Error.WriteLine($"[slnx] Found {projectNodes.Count()} <Project> nodes");
+                    var slnDir = Path.GetDirectoryName(solutionFilePath)!;
+                    List<ProjectRecord> collected = new();
+                    foreach (var node in projectNodes)
+                    {
+                        var nameAttr = (string?)node.Attribute("Name");
+                        var includeRaw = (string?)node.Attribute("Include")
+                            ?? (string?)node.Attribute("Path")
+                            ?? (string?)node.Attribute("File")
+                            ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(includeRaw))
+                        {
+                            Console.Error.WriteLine("[slnx] Skipping <Project> with no Include/Path/File attribute");
+                            continue;
+                        }
+                        var resolved = ResolveProjectReference(slnDir, includeRaw);
+                        foreach (var r in resolved)
+                        {
+                            if (File.Exists(r))
+                            {
+                                var prName = nameAttr ?? Path.GetFileNameWithoutExtension(r);
+                                collected.Add(new ProjectRecord(prName, r));
+                                Console.Error.WriteLine($"[slnx] Accepted '{includeRaw}' -> '{r}'");
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine($"[slnx] Not found '{includeRaw}' -> '{r}'");
+                            }
+                        }
+                    }
+                    projFiles = collected
                         .GroupBy(r => r.Path, StringComparer.OrdinalIgnoreCase)
                         .Select(g => g.First())
                         .ToList();
+                    Console.Error.WriteLine($"[slnx] Resolved {projFiles.Count()} project file(s) after normalization");
+                    if (projFiles is null || projFiles.Count() == 0)
+                    {
+                        // Fallback: scan directory for project files if explicit project nodes didn't resolve.
+                        var excludedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git", "node_modules" };
+                        var discovered = Directory.EnumerateFiles(slnDir, "*.*", SearchOption.AllDirectories)
+                            .Where(f => f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
+                            .Where(f => !f.Split(Path.DirectorySeparatorChar).Any(part => excludedDirs.Contains(part)))
+                            .Take(100)
+                            .Select(p => new ProjectRecord(Path.GetFileNameWithoutExtension(p), p))
+                            .ToList();
+                        Console.Error.WriteLine($"[slnx] Fallback scan found {discovered.Count} project file(s) (after exclusions)");
+                        projFiles = discovered;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -241,5 +281,62 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             var s when s.Equals("winexe", StringComparison.OrdinalIgnoreCase) => "WinExe",
             _ => raw
         };
+    }
+
+    /// <summary>
+    /// Resolve a .slnx project reference which may be:
+    ///  - A relative path to a .csproj/.fsproj
+    ///  - A directory containing exactly one .csproj/.fsproj
+    ///  - A stem (project name without extension) in the solution directory or subdirectory
+    /// Returns one or more candidate full paths (usually 0 or 1; >1 only if ambiguous directory contains multiple project files).
+    /// </summary>
+    static IEnumerable<string> ResolveProjectReference(string solutionDir, string includeRaw)
+    {
+        var results = new List<string>();
+        if (string.IsNullOrWhiteSpace(includeRaw)) return results;
+
+        string norm = includeRaw.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar).Trim();
+        string full = Path.GetFullPath(norm, solutionDir);
+
+        // If direct file with extension
+        if (File.Exists(full)) { results.Add(full); return results; }
+
+        // If path without extension but directory exists -> scan inside for project files (top-level only)
+        if (Directory.Exists(full))
+        {
+            var projFiles = Directory.GetFiles(full, "*.csproj").Concat(Directory.GetFiles(full, "*.fsproj"));
+            results.AddRange(projFiles);
+            return results;
+        }
+
+        // If no extension supplied, try adding .csproj / .fsproj
+        if (!Path.HasExtension(full))
+        {
+            var cs = full + ".csproj";
+            var fs = full + ".fsproj";
+            if (File.Exists(cs)) results.Add(cs);
+            if (File.Exists(fs)) results.Add(fs);
+            if (results.Count > 0) return results;
+        }
+
+        // As last resort, search recursively (limited depth) for matching file name
+        var stem = Path.GetFileName(full);
+        if (!string.IsNullOrEmpty(stem))
+        {
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(solutionDir, "*.*", SearchOption.AllDirectories))
+                {
+                    if (!(f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))) continue;
+                    if (Path.GetFileNameWithoutExtension(f).Equals(stem, StringComparison.OrdinalIgnoreCase))
+                    {
+                        results.Add(f);
+                        if (results.Count > 10) break; // safety cap
+                    }
+                }
+            }
+            catch { /* ignore */ }
+        }
+        return results;
     }
 }
