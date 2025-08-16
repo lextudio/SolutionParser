@@ -216,6 +216,33 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             var desingerHostPath = proj.GetPropertyValue("AvaloniaPreviewerNetCoreToolPath");
 
             var targetfx = proj.GetPropertyValue("TargetFramework");
+            if (string.IsNullOrEmpty(targetfx))
+            {
+                // Try to get TargetFrameworks and select the first .NET TPM
+                var targetfxs = proj.GetPropertyValue("TargetFrameworks");
+                if (!string.IsNullOrEmpty(targetfxs))
+                {
+                    var frameworks = targetfxs.Split(';');
+                    foreach (var fw in frameworks)
+                    {
+                        var trimmed = fw.Trim();
+                        if (trimmed.StartsWith("net") && trimmed.Length > 3 && char.IsDigit(trimmed[3]))
+                        {
+                            targetfx = trimmed;
+                            break;
+                        }
+                    }
+                    if (string.IsNullOrEmpty(targetfx))
+                    {
+                        Console.Error.WriteLine($"[warning] Project '{name}' TargetFrameworks does not contain a compatible .NET TPM (netX.Y). Asset discovery may fail.");
+                        // Fallback: pick the first listed
+                        if (frameworks.Length > 0)
+                        {
+                            targetfx = frameworks[0].Trim();
+                        }
+                    }
+                }
+            }
             var projectDepsFilePath = proj.GetPropertyValue("ProjectDepsFilePath");
             var projectRuntimeConfigFilePath = proj.GetPropertyValue("ProjectRuntimeConfigFilePath");
 
@@ -224,6 +251,17 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             desingerHostPath = string.IsNullOrEmpty(desingerHostPath) ? "" : Path.GetFullPath(desingerHostPath);
 
             var intermediateOutputPath = GetIntermediateOutputPath(proj);
+
+            Console.Error.WriteLine($"[assets] Project: {name}");
+            Console.Error.WriteLine($"[assets]   Path: {projPath}");
+            Console.Error.WriteLine($"[assets]   TargetPath: {assembly}");
+            Console.Error.WriteLine($"[assets]   OutputType: {outputType}");
+            Console.Error.WriteLine($"[assets]   NormalizedOutputType: {normalizedOutputType}");
+            Console.Error.WriteLine($"[assets]   DesignerHostPath: {desingerHostPath}");
+            Console.Error.WriteLine($"[assets]   TargetFramework: {targetfx}");
+            Console.Error.WriteLine($"[assets]   DepsFilePath: {projectDepsFilePath}");
+            Console.Error.WriteLine($"[assets]   RuntimeConfigFilePath: {projectRuntimeConfigFilePath}");
+            Console.Error.WriteLine($"[assets]   IntermediateOutputPath: {intermediateOutputPath}");
 
             return new Project
             {
