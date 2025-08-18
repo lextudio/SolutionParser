@@ -173,17 +173,24 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
 
         foreach (var proj in allProjects)
         {
-            proj.CoreProject?.GetItems("AvaloniaXaml").ToList().ForEach(item =>
+            if (proj.AvaloniaXamlFiles != null)
             {
-                var filePath = Path.GetFullPath(item.EvaluatedInclude, proj.DirectoryPath ?? "");
-                var designerFile = new ProjectFile
+                proj.AvaloniaXamlFiles.ForEach(designerFiles.Add);
+            }
+            else
+            {
+                proj.CoreProject?.GetItems("AvaloniaXaml")?.ToList().ForEach(item =>
                 {
-                    Path = filePath,
-                    TargetPath = proj.TargetPath,
-                    ProjectPath = proj.Path
-                };
-                designerFiles.Add(designerFile);
-            });
+                    var filePath = Path.GetFullPath(item.EvaluatedInclude, proj.DirectoryPath ?? "");
+                    var designerFile = new ProjectFile
+                    {
+                        Path = filePath,
+                        TargetPath = proj.TargetPath,
+                        ProjectPath = proj.Path
+                    };
+                    designerFiles.Add(designerFile);
+                });
+            }
         }
 
         var solution = solutionFilePath ?? solutionFolderPath;
@@ -209,16 +216,9 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             {
                 LoadSettings = ProjectLoadSettings.IgnoreMissingImports | ProjectLoadSettings.FailOnUnresolvedSdk
             });
-
-            var assembly = proj.GetPropertyValue("TargetPath");
-            var outputType = proj.GetPropertyValue("outputType");
-            var normalizedOutputType = NormalizeOutputType(outputType);
-            var desingerHostPath = proj.GetPropertyValue("AvaloniaPreviewerNetCoreToolPath");
-
             var targetfx = proj.GetPropertyValue("TargetFramework");
             if (string.IsNullOrEmpty(targetfx))
             {
-                // Try to get TargetFrameworks and select the first .NET TPM
                 var targetfxs = proj.GetPropertyValue("TargetFrameworks");
                 if (!string.IsNullOrEmpty(targetfxs))
                 {
@@ -228,27 +228,36 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
                         var trimmed = fw.Trim();
                         if (trimmed.StartsWith("net") && trimmed.Length > 3 && char.IsDigit(trimmed[3]))
                         {
-                            targetfx = trimmed;
-                            break;
+                            try
+                            {
+                                Project? value = LoadPropertiesAndItemsFromShell(name, projPath, proj, trimmed);
+                                return value;
+                            }
+                            catch (Exception msbuildEx)
+                            {
+                                Console.Error.WriteLine($"[msbuild] Failed to run dotnet msbuild for {projPath} ({trimmed}): {msbuildEx.Message}");
+                            }
                         }
                     }
                     if (string.IsNullOrEmpty(targetfx))
                     {
                         Console.Error.WriteLine($"[warning] Project '{name}' TargetFrameworks does not contain a compatible .NET TPM (netX.Y). Asset discovery may fail.");
-                        // Fallback: pick the first listed
-                        if (frameworks.Length > 0)
-                        {
-                            targetfx = frameworks[0].Trim();
-                        }
+                        return null;
                     }
                 }
             }
+
+            var assembly = proj.GetPropertyValue("TargetPath");
+            var outputType = proj.GetPropertyValue("outputType");
+            var normalizedOutputType = NormalizeOutputType(outputType);
+            var designerHostPath = proj.GetPropertyValue("AvaloniaPreviewerNetCoreToolPath");
+
             var projectDepsFilePath = proj.GetPropertyValue("ProjectDepsFilePath");
             var projectRuntimeConfigFilePath = proj.GetPropertyValue("ProjectRuntimeConfigFilePath");
 
             var references = proj.GetItems("ProjectReference");
             var referencesPath = references.Select(p => Path.GetFullPath(p.EvaluatedInclude, projPath)).ToArray();
-            desingerHostPath = string.IsNullOrEmpty(desingerHostPath) ? "" : Path.GetFullPath(desingerHostPath);
+            designerHostPath = string.IsNullOrEmpty(designerHostPath) ? "" : Path.GetFullPath(designerHostPath);
 
             var intermediateOutputPath = GetIntermediateOutputPath(proj);
 
@@ -257,7 +266,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
             Console.Error.WriteLine($"[assets]   TargetPath: {assembly}");
             Console.Error.WriteLine($"[assets]   OutputType: {outputType}");
             Console.Error.WriteLine($"[assets]   NormalizedOutputType: {normalizedOutputType}");
-            Console.Error.WriteLine($"[assets]   DesignerHostPath: {desingerHostPath}");
+            Console.Error.WriteLine($"[assets]   DesignerHostPath: {designerHostPath}");
             Console.Error.WriteLine($"[assets]   TargetFramework: {targetfx}");
             Console.Error.WriteLine($"[assets]   DepsFilePath: {projectDepsFilePath}");
             Console.Error.WriteLine($"[assets]   RuntimeConfigFilePath: {projectRuntimeConfigFilePath}");
@@ -270,7 +279,7 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
                 TargetPath = assembly,
                 OutputType = outputType,
                 NormalizedOutputType = normalizedOutputType,
-                DesignerHostPath = desingerHostPath,
+                DesignerHostPath = designerHostPath,
 
                 TargetFramework = targetfx,
                 DepsFilePath = projectDepsFilePath,
@@ -279,7 +288,6 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
                 CoreProject = proj,
                 ProjectReferences = referencesPath,
                 IntermediateOutputPath = intermediateOutputPath
-
             };
         }
         catch (Exception ex)
@@ -289,9 +297,95 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
         }
     }
 
-    static string GetIntermediateOutputPath(MSProject proj)
+    private static Project? LoadPropertiesAndItemsFromShell(string name, string projPath, MSProject proj, string target)
     {
-        var intermediateOutputPath = proj.GetPropertyValue("IntermediateOutputPath");
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "dotnet",
+            Arguments = $"msbuild \"{projPath}\" /p:TargetFramework={target} /getProperty:outputType /getProperty:AvaloniaPreviewerNetCoreToolPath /getProperty:TargetPath /getProperty:ProjectDepsFilePath /getProperty:ProjectRuntimeConfigFilePath /getItem:AvaloniaXaml",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(projPath)
+        };
+        using var proc = System.Diagnostics.Process.Start(psi);
+        proc?.WaitForExit(10000);
+        var output = proc?.StandardOutput.ReadToEnd();
+        var error = proc?.StandardError.ReadToEnd();
+        Console.Error.WriteLine($"[msbuild] Output for {projPath} ({target}):\n{output}");
+        if (!string.IsNullOrWhiteSpace(error))
+            Console.Error.WriteLine($"[msbuild] Error for {projPath} ({target}):\n{error}");
+
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            try
+            {
+                return GetProjectFromJson(name, projPath, proj, target, output);
+            }
+            catch (Exception jsonEx)
+            {
+                Console.Error.WriteLine($"Failed to parse msbuild JSON output: {jsonEx.Message}");
+            }
+        }
+
+        return null;
+    }
+
+    private static Project GetProjectFromJson(string name, string projPath, MSProject proj, string target, string output)
+    {
+        using var doc = JsonDocument.Parse(output);
+        var props = doc.RootElement.GetProperty("Properties");
+        string targetPath = props.TryGetProperty("TargetPath", out var targetPathElem) ? targetPathElem.GetString() ?? "" : "";
+        string outputType = props.TryGetProperty("outputType", out var outputTypeElem) ? outputTypeElem.GetString() ?? "" : "";
+        string designerHostPath = props.TryGetProperty("AvaloniaPreviewerNetCoreToolPath", out var designerHostElem) ? designerHostElem.GetString() ?? "" : "";
+        string depsFilePath = props.TryGetProperty("ProjectDepsFilePath", out var depsElem) ? depsElem.GetString() ?? "" : "";
+        string runtimeConfigFilePath = props.TryGetProperty("ProjectRuntimeConfigFilePath", out var runtimeElem) ? runtimeElem.GetString() ?? "" : "";
+        string intermediateOutputPath = props.TryGetProperty("IntermediateOutputPath", out var iopElem) ? iopElem.GetString() ?? "" : "";
+
+        // Parse AvaloniaXaml items from Items section
+        List<ProjectFile> avaloniaXamlFiles = new();
+        if (doc.RootElement.TryGetProperty("Items", out var itemsObj))
+        {
+            if (itemsObj.TryGetProperty("AvaloniaXaml", out var axamlArray) && axamlArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in axamlArray.EnumerateArray())
+                {
+                    var fullPath = item.TryGetProperty("FullPath", out var fp) ? fp.GetString() : null;
+                    if (!string.IsNullOrEmpty(fullPath))
+                    {
+                        avaloniaXamlFiles.Add(new ProjectFile
+                        {
+                            Path = fullPath!,
+                            TargetPath = targetPath,
+                            ProjectPath = projPath
+                        });
+                    }
+                }
+            }
+        }
+
+        return new Project
+        {
+            Name = name,
+            Path = projPath,
+            TargetPath = targetPath,
+            OutputType = outputType,
+            NormalizedOutputType = NormalizeOutputType(outputType),
+            DesignerHostPath = designerHostPath,
+            TargetFramework = target,
+            DepsFilePath = depsFilePath,
+            RuntimeConfigFilePath = runtimeConfigFilePath,
+            CoreProject = proj,
+            AvaloniaXamlFiles = avaloniaXamlFiles,
+            ProjectReferences = Array.Empty<string>(),
+            IntermediateOutputPath = GetIntermediateOutputPath(proj, intermediateOutputPath)
+        };
+    }
+
+    static string GetIntermediateOutputPath(MSProject proj, string? overridingPath = null)
+    {
+        var intermediateOutputPath = overridingPath ?? proj.GetPropertyValue("IntermediateOutputPath");
         var iop = Path.Combine(intermediateOutputPath, "Avalonia", "references");
 
         if (!Path.IsPathRooted(intermediateOutputPath))

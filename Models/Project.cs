@@ -20,6 +20,9 @@ internal class Project
     [JsonIgnore]
     public MSProject? CoreProject { get; set; } = null;
 
+    [JsonIgnore]
+    public List<ProjectFile>? AvaloniaXamlFiles { get; set; }
+
     public string? DirectoryPath => System.IO.Path.GetDirectoryName(Path);
 
     public string? IntermediateOutputPath { get; internal set; }
