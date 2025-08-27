@@ -11,11 +11,12 @@ using MSProject = Microsoft.Build.Evaluation.Project;
 using Project = Models.Project;
 
 namespace Commands;
+
 public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
-    [Description("The solution file (.sln or .slnx) path, or folder containing project files.")]
+        [Description("The solution file (.sln or .slnx) path, or folder containing project files.")]
         [CommandArgument(0, "<SOLUTION>")]
         public required string Solution { get; init; }
     }
@@ -299,10 +300,11 @@ public sealed class SolutionParserCommand : Command<SolutionParserCommand.Settin
 
     private static Project? LoadPropertiesAndItemsFromShell(string name, string projPath, MSProject proj, string target)
     {
+        var configuration = Environment.GetEnvironmentVariable("AXAML_BUILD_CONFIGURATION_PREFERENCE") ?? "Debug";
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "dotnet",
-            Arguments = $"msbuild \"{projPath}\" /p:TargetFramework={target} /getProperty:outputType /getProperty:AvaloniaPreviewerNetCoreToolPath /getProperty:TargetPath /getProperty:ProjectDepsFilePath /getProperty:ProjectRuntimeConfigFilePath /getItem:AvaloniaXaml",
+            Arguments = $"msbuild \"{projPath}\" /p:TargetFramework={target} /p:Configuration={configuration} /getProperty:outputType /getProperty:AvaloniaPreviewerNetCoreToolPath /getProperty:TargetPath /getProperty:ProjectDepsFilePath /getProperty:ProjectRuntimeConfigFilePath /getItem:AvaloniaXaml",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
